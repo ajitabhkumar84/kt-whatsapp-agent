@@ -1,0 +1,40 @@
+name: Sweep
+
+# Triggers are schedule and workflow_dispatch ONLY.
+#
+# Never add pull_request_target or workflow_run. Both can be induced to run
+# attacker-supplied code with repository secrets in scope, and this repository
+# holds the shared secret that authenticates against the live site.
+on:
+  schedule:
+    # Every 15 minutes (UTC). GitHub frequently runs scheduled workflows 5-15
+    # minutes late; that is fine, because the first-refusal window is 30 minutes
+    # and the sweep is idempotent per inbound message.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# A late run must never overlap the next scheduled one. Queued rather than
+# cancelled, so a sweep is delayed rather than skipped.
+concurrency:
+  group: whatsapp-sweep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run sweep
+        env:
+          AGENT_HMAC_SECRET: ${{ secrets.AGENT_HMAC_SECRET }}
+          SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+        run: node scripts/sweep.mjs
