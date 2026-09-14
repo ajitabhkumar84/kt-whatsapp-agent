@@ -25,7 +25,9 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Headroom for Substage 3.1's sequential per-job claude -p calls (up to
+    # translationJobBatchLimit), on top of the original two HTTP round trips.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,4 +39,5 @@ jobs:
         env:
           AGENT_HMAC_SECRET: ${{ secrets.AGENT_HMAC_SECRET }}
           SITE_BASE_URL: ${{ secrets.SITE_BASE_URL }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: node scripts/sweep.mjs

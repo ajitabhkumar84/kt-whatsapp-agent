@@ -1,20 +1,22 @@
-// Trigger one sweep on the private site.
+// Trigger the two-call sweep on the private site.
 //
-// This is the entire Phase 2 runner. It holds no business logic: it signs a
-// request and reports counters. Every decision about who to message, what to
+// Call 1 fetches queued translation jobs (Substage 3.1); each is rewritten by
+// Haiku here; Call 2 posts the rewrites back for server-side validation,
+// finalizing and sending. This runner holds no business logic: it signs
+// requests and reports counters. Every decision about who to message, what to
 // say and whether to say it at all is made behind the HMAC boundary, on the
 // private side, where the pricing and the customer data live.
-//
-// In Phase 3 the model runs in this same workflow, between fetching a queue and
-// posting replies back. Nothing here is throwaway.
 
 import { createHmac } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { runTranslationJob } from './lib/translation-job.mjs';
 
-// Must match AGENT_CONTRACT_VERSION in src/lib/agent-auth.ts on the private
-// side. A mismatch is rejected with 409 rather than best-effort parsed, because
-// the two repositories deploy independently and a silent drift would surface as
+// Must be in ACCEPTED_CONTRACT_VERSIONS in src/lib/agent-auth.ts on the
+// private side (currently ['2.1', '2.0'] during the Substage 3.1 burn-in). A
+// mismatch is rejected with 409 rather than best-effort parsed, because the
+// two repositories deploy independently and a silent drift would surface as
 // strange behaviour on live customer conversations.
-const CONTRACT_VERSION = '2.0';
+const CONTRACT_VERSION = '2.1';
 
 const secret = process.env.AGENT_HMAC_SECRET;
 const baseUrl = process.env.SITE_BASE_URL;
@@ -24,75 +26,114 @@ if (!secret || !baseUrl) {
   process.exit(1);
 }
 
-const body = JSON.stringify({});
-const timestamp = Date.now().toString();
-// The timestamp is inside the signed payload, so a captured request cannot have
-// its life extended by editing the header.
-const signature = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
+async function postSweep(payload) {
+  const body = JSON.stringify(payload);
+  const timestamp = Date.now().toString();
+  // The timestamp is inside the signed payload, so a captured request cannot
+  // have its life extended by editing the header.
+  const signature = createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
+  const url = new URL('/api/agent/sweep', baseUrl).toString();
 
-const url = new URL('/api/agent/sweep', baseUrl).toString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-agent-signature': signature,
+        'x-agent-timestamp': timestamp,
+        'x-agent-contract-version': CONTRACT_VERSION,
+      },
+      body,
+      signal: controller.signal,
+    });
+    return { ok: response.ok, status: response.status, text: await response.text() };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
-const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 120_000);
+function failHttp(status) {
+  // Status and nothing else. The body could carry detail we should not print
+  // into a world-readable public log.
+  console.error(`Sweep failed: HTTP ${status}`);
+  if (status === 409) {
+    console.error('Contract version mismatch — update CONTRACT_VERSION in this repo to match the site.');
+  }
+  if (status === 401) {
+    console.error('Signature rejected — AGENT_HMAC_SECRET here does not match the one on Cloudflare.');
+  }
+  process.exit(1);
+}
 
 try {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-agent-signature': signature,
-      'x-agent-timestamp': timestamp,
-      'x-agent-contract-version': CONTRACT_VERSION,
-    },
-    body,
-    signal: controller.signal,
-  });
+  // --- Call 1 -------------------------------------------------------------
+  const call1 = await postSweep({});
+  if (!call1.ok) failHttp(call1.status);
 
-  const text = await response.text();
-
-  if (!response.ok) {
-    // Status and nothing else. The body could carry detail we should not print
-    // into a world-readable public log.
-    console.error(`Sweep failed: HTTP ${response.status}`);
-    if (response.status === 409) {
-      console.error('Contract version mismatch — update CONTRACT_VERSION in this repo to match the site.');
-    }
-    if (response.status === 401) {
-      console.error('Signature rejected — AGENT_HMAC_SECRET here does not match the one on Cloudflare.');
-    }
-    process.exit(1);
-  }
-
-  let result;
+  let result1;
   try {
-    result = JSON.parse(text);
+    result1 = JSON.parse(call1.text);
   } catch {
     console.error('Sweep returned a non-JSON response.');
     process.exit(1);
   }
 
-  if (result.agentEnabled === false) {
+  if (result1.agentEnabled === false) {
     console.log('Agent is switched off in Sanity. Nothing to do.');
     process.exit(0);
   }
 
   // Counters only. The endpoint deliberately returns no message bodies, no
   // phone numbers and no lead ids (a leadId embeds the customer's number).
-  const mode = result.allowlistOnly ? 'allowlist-only' : result.shadowMode ? 'shadow' : 'live';
+  const mode = result1.allowlistOnly ? 'allowlist-only' : result1.shadowMode ? 'shadow' : 'live';
   console.log(
-    `Sweep ok [${mode}] — considered=${result.considered} sent=${result.sent} ` +
-      `drafted=${result.drafted} skipped=${result.skipped} blocked=${result.blocked} failed=${result.failed}`
+    `Sweep ok [call 1, ${mode}] — considered=${result1.considered} sent=${result1.sent} ` +
+      `drafted=${result1.drafted} skipped=${result1.skipped} blocked=${result1.blocked} failed=${result1.failed} ` +
+      `queuedForTranslation=${result1.queuedForTranslation ?? 0}`
   );
+  if (result1.blocked > 0) console.log(`::warning::${result1.blocked} message(s) were blocked before sending.`);
+  if (result1.failed > 0) console.log(`::warning::${result1.failed} message(s) failed to send.`);
 
-  // A blocked send means the price-assertion guard or the allowlist refused
-  // something. Never fatal, but it should be visible in the run list.
-  if (result.blocked > 0) console.log(`::warning::${result.blocked} message(s) were blocked before sending.`);
-  if (result.failed > 0) console.log(`::warning::${result.failed} message(s) failed to send.`);
+  const jobs = result1.translationJobs || [];
+  if (jobs.length === 0) {
+    console.log('No translation jobs this tick.');
+    process.exit(0);
+  }
+
+  // --- Per-job Haiku rewrite -----------------------------------------------
+  const composedReplies = [];
+  for (const job of jobs) {
+    composedReplies.push(await runTranslationJob(job, { spawnFn: spawn }));
+  }
+
+  // --- Call 2 ---------------------------------------------------------------
+  const call2 = await postSweep({ composedReplies });
+  if (!call2.ok) failHttp(call2.status);
+
+  let result2;
+  try {
+    result2 = JSON.parse(call2.text);
+  } catch {
+    console.error('Call 2 returned a non-JSON response.');
+    process.exit(1);
+  }
+
+  console.log(
+    `Sweep ok [call 2] — drafted=${result2.drafted} sent=${result2.sent} blocked=${result2.blocked} ` +
+      `failed=${result2.failed} translationSuccessCount=${result2.translationSuccessCount} ` +
+      `translationFallbackCount=${result2.translationFallbackCount}`
+  );
+  if (result2.blocked > 0) {
+    console.log(`::warning::${result2.blocked} translated message(s) were blocked before sending.`);
+  }
+  if (result2.failed > 0) {
+    console.log(`::warning::${result2.failed} translated message(s) failed to send.`);
+  }
 
   process.exit(0);
 } catch (error) {
   console.error(`Sweep request failed: ${error.name === 'AbortError' ? 'timed out' : error.message}`);
   process.exit(1);
-} finally {
-  clearTimeout(timeout);
 }
