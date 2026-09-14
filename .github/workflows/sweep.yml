@@ -35,6 +35,14 @@ jobs:
         with:
           node-version: '20'
 
+      # Substage 3.1's translation-job.mjs spawns the `claude` binary by bare
+      # name (spawn('claude', ...)) — without this, that spawn fails ENOENT
+      # (surfaces as "claude exited -2" in the sweep log) and every ask-kind
+      # reply silently falls back to the untranslated English template.
+      # setup-node does not provide this; it must be installed explicitly.
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Run sweep
         env:
           AGENT_HMAC_SECRET: ${{ secrets.AGENT_HMAC_SECRET }}
