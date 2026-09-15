@@ -125,6 +125,13 @@ try {
       `failed=${result2.failed} translationSuccessCount=${result2.translationSuccessCount} ` +
       `translationFallbackCount=${result2.translationFallbackCount}`
   );
+  // Content-free counters (no template text, no jobIds, no phone numbers) —
+  // safe for this world-readable log. Printed whenever any fallback happened,
+  // since Cloudflare only tails console.warn live and cannot show why a past
+  // run's validation rejected a rewrite; this is the durable substitute.
+  if (result2.translationFallbackCount > 0 && result2.translationFallbackReasons) {
+    console.log(`Translation fallback reasons: ${JSON.stringify(result2.translationFallbackReasons)}`);
+  }
   if (result2.blocked > 0) {
     console.log(`::warning::${result2.blocked} translated message(s) were blocked before sending.`);
   }
