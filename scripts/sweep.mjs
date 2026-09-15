@@ -132,6 +132,11 @@ try {
   if (result2.translationFallbackCount > 0 && result2.translationFallbackReasons) {
     console.log(`Translation fallback reasons: ${JSON.stringify(result2.translationFallbackReasons)}`);
   }
+  // Bare expected/actual counts only — pins down a drop/merge/add without the
+  // rewrite text itself.
+  if (result2.translationAskItemMismatches?.length > 0) {
+    console.log(`Ask-item count mismatches: ${JSON.stringify(result2.translationAskItemMismatches)}`);
+  }
   if (result2.blocked > 0) {
     console.log(`::warning::${result2.blocked} translated message(s) were blocked before sending.`);
   }
