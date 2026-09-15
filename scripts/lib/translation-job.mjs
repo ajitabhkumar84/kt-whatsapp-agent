@@ -46,7 +46,13 @@ export function buildUserMessage(job) {
   ].join('\n');
 }
 
-const JOB_TIMEOUT_MS = 30_000;
+// Bumped from 30s after a live run (2026-09-15) showed `claude exited null`
+// exactly 30.03s after Call 1 — a SIGKILL from this very timeout, not a
+// content rejection. A cold `claude -p` invocation (fresh npm install, no
+// warm auth/model cache) can apparently run past 30s in GitHub Actions; 60s
+// gives real headroom while the workflow's own 10-minute job timeout still
+// bounds a pathologically stuck process.
+const JOB_TIMEOUT_MS = 60_000;
 
 // Cheap defensive insurance: with --output-format json --json-schema, the
 // CLI's own structured_output field is the verified parse path and normally
@@ -57,14 +63,24 @@ function stripFence(raw) {
   return String(raw).replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
 }
 
+/** Longest stderr slice worth printing — plenty for a CLI error line, short enough not to bloat the log. */
+const STDERR_SNIPPET_LEN = 300;
+
 /**
  * Run one translation job through `claude -p`. Never throws — any failure
  * (non-zero exit, malformed output, timeout, spawn error) resolves
  * { jobId, failed: true } so one job's failure never aborts the batch; the
  * caller falls back to the English template exactly as any other validation
  * failure does.
+ *
+ * Every failure logs a reason and, where the CLI produced one, a stderr
+ * snippet — generic CLI diagnostic text (auth/network/CLI errors), never
+ * customer content, so safe for this world-readable log. Without this, a
+ * killed-by-timeout job and a genuine CLI error both looked identical
+ * (`claude exited null`) — see the 2026-09-15 live run that turned out to be
+ * exactly this timeout, not a content rejection.
  */
-export function runTranslationJob(job, { spawnFn }) {
+export function runTranslationJob(job, { spawnFn, timeoutMs = JOB_TIMEOUT_MS }) {
   return new Promise((resolve) => {
     const args = [
       '-p', buildUserMessage(job),
@@ -81,25 +97,36 @@ export function runTranslationJob(job, { spawnFn }) {
     let child;
     try {
       child = spawnFn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch {
+    } catch (error) {
+      console.warn(`Job ${job.jobId}: spawn failed (${error.message})`);
       resolve({ jobId: job.jobId, failed: true });
       return;
     }
 
     let stdout = '';
+    let stderr = '';
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       try { child.kill('SIGKILL'); } catch {}
-    }, JOB_TIMEOUT_MS);
+    }, timeoutMs);
+
+    const stderrSnippet = () => (stderr ? ` — stderr: ${stderr.slice(0, STDERR_SNIPPET_LEN).trim()}` : '');
 
     child.stdout.on('data', (d) => { stdout += d; });
-    child.on('error', () => {
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', (error) => {
       clearTimeout(timer);
+      console.warn(`Job ${job.jobId}: spawn error (${error.message})`);
       resolve({ jobId: job.jobId, failed: true });
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       clearTimeout(timer);
       if (code !== 0) {
-        console.warn(`Job ${job.jobId}: claude exited ${code}`);
+        const detail = timedOut
+          ? `timed out after ${timeoutMs / 1000}s`
+          : `claude exited ${code}${signal ? ` (signal ${signal})` : ''}`;
+        console.warn(`Job ${job.jobId}: ${detail}${stderrSnippet()}`);
         resolve({ jobId: job.jobId, failed: true });
         return;
       }
@@ -122,7 +149,7 @@ export function runTranslationJob(job, { spawnFn }) {
         }
         throw new Error('no text field in output');
       } catch (error) {
-        console.warn(`Job ${job.jobId}: could not parse output (${error.message})`);
+        console.warn(`Job ${job.jobId}: could not parse output (${error.message})${stderrSnippet()}`);
         resolve({ jobId: job.jobId, failed: true });
       }
     });

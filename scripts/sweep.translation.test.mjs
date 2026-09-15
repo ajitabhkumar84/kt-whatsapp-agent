@@ -40,6 +40,23 @@ function fakeSpawn({ stdout = '', exitCode = 0, emitError = false }) {
   };
 }
 
+// Never emits 'close' or 'error' on its own — simulates a `claude -p` call
+// still running when the job's timeout fires. kill() simulates what the OS
+// actually does to a killed process: 'close' fires with a null exit code and
+// the signal that killed it (this is what a real 2026-09-15 live run showed:
+// `claude exited null` exactly at the timeout, not a content rejection).
+function fakeHangingSpawn() {
+  return () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = (signal) => {
+      setImmediate(() => child.emit('close', null, signal));
+    };
+    return child;
+  };
+}
+
 const job = {
   jobId: 'job-1',
   kind: 'ask_details',
@@ -79,6 +96,12 @@ async function run() {
     const envelope = JSON.stringify({ subtype: 'success', result: '```json\n{"text": "Fenced text"}\n```' });
     const result = await runTranslationJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
     check('strips the fence and parses text from result', result.text === 'Fenced text' && !result.failed);
+  }
+
+  console.log('\nsweep.translation: per-job timeout kills a hung process');
+  {
+    const result = await runTranslationJob(job, { spawnFn: fakeHangingSpawn(), timeoutMs: 20 });
+    check('falls back to failed:true once the timeout fires', result.failed === true);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
