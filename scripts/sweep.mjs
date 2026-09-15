@@ -10,13 +10,14 @@
 import { createHmac } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { runTranslationJob } from './lib/translation-job.mjs';
+import { runFaqJob } from './lib/faq-job.mjs';
 
 // Must be in ACCEPTED_CONTRACT_VERSIONS in src/lib/agent-auth.ts on the
-// private side (currently ['2.1', '2.0'] during the Substage 3.1 burn-in). A
+// private side (currently ['2.2', '2.1'] during the Substage 3.2 burn-in). A
 // mismatch is rejected with 409 rather than best-effort parsed, because the
 // two repositories deploy independently and a silent drift would surface as
 // strange behaviour on live customer conversations.
-const CONTRACT_VERSION = '2.1';
+const CONTRACT_VERSION = '2.2';
 
 const secret = process.env.AGENT_HMAC_SECRET;
 const baseUrl = process.env.SITE_BASE_URL;
@@ -91,7 +92,7 @@ try {
   console.log(
     `Sweep ok [call 1, ${mode}] — considered=${result1.considered} sent=${result1.sent} ` +
       `drafted=${result1.drafted} skipped=${result1.skipped} blocked=${result1.blocked} failed=${result1.failed} ` +
-      `queuedForTranslation=${result1.queuedForTranslation ?? 0}`
+      `queuedForTranslation=${result1.queuedForTranslation ?? 0} queuedForFaq=${result1.queuedForFaq ?? 0}`
   );
   if (result1.blocked > 0) console.log(`::warning::${result1.blocked} message(s) were blocked before sending.`);
   if (result1.failed > 0) console.log(`::warning::${result1.failed} message(s) failed to send.`);
@@ -102,10 +103,19 @@ try {
     process.exit(0);
   }
 
-  // --- Per-job Haiku rewrite -----------------------------------------------
+  // --- Per-job Haiku call ----------------------------------------------------
+  // Partitioned by kind (Substage 3.2): the four ask-kinds still go through
+  // translation-job.mjs's pure re-expression prompt; faq_answer goes through
+  // faq-job.mjs's own content-selection prompt instead. Merged into one
+  // composedReplies[] afterwards — Call 2 tells them apart by jobId lookup,
+  // not by anything in this array's shape.
   const composedReplies = [];
   for (const job of jobs) {
-    composedReplies.push(await runTranslationJob(job, { spawnFn: spawn }));
+    if (job.kind === 'faq_answer') {
+      composedReplies.push(await runFaqJob(job, { spawnFn: spawn }));
+    } else {
+      composedReplies.push(await runTranslationJob(job, { spawnFn: spawn }));
+    }
   }
 
   // --- Call 2 ---------------------------------------------------------------
@@ -123,7 +133,9 @@ try {
   console.log(
     `Sweep ok [call 2] — drafted=${result2.drafted} sent=${result2.sent} blocked=${result2.blocked} ` +
       `failed=${result2.failed} translationSuccessCount=${result2.translationSuccessCount} ` +
-      `translationFallbackCount=${result2.translationFallbackCount}`
+      `translationFallbackCount=${result2.translationFallbackCount} ` +
+      `faqAnswerSuccessCount=${result2.faqAnswerSuccessCount ?? 0} faqAnswerNoMatchCount=${result2.faqAnswerNoMatchCount ?? 0} ` +
+      `faqAnswerFallbackCount=${result2.faqAnswerFallbackCount ?? 0}`
   );
   // Content-free counters (no template text, no jobIds, no phone numbers) —
   // safe for this world-readable log. Printed whenever any fallback happened,
@@ -136,6 +148,13 @@ try {
   // rewrite text itself.
   if (result2.translationAskItemMismatches?.length > 0) {
     console.log(`Ask-item count mismatches: ${JSON.stringify(result2.translationAskItemMismatches)}`);
+  }
+  // Same content-free convention as the translation counters above —
+  // faqAnswerNoMatchCount is NOT a failure (the runner's own "none of the
+  // shortlist confidently fits" outcome), so it is not included here; only
+  // faqAnswerFallbackReasons ever needs a breakdown.
+  if (result2.faqAnswerFallbackCount > 0 && result2.faqAnswerFallbackReasons) {
+    console.log(`FAQ answer fallback reasons: ${JSON.stringify(result2.faqAnswerFallbackReasons)}`);
   }
   if (result2.blocked > 0) {
     console.log(`::warning::${result2.blocked} translated message(s) were blocked before sending.`);
