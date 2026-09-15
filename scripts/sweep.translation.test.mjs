@@ -7,7 +7,7 @@
 // parsing/fallback with zero credentials and zero subscription usage.
 
 import { EventEmitter } from 'node:events';
-import { runTranslationJob } from './lib/translation-job.mjs';
+import { runTranslationJob, buildUserMessage } from './lib/translation-job.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -102,6 +102,19 @@ async function run() {
   {
     const result = await runTranslationJob(job, { spawnFn: fakeHangingSpawn(), timeoutMs: 20 });
     check('falls back to failed:true once the timeout fires', result.failed === true);
+  }
+
+  console.log('\nsweep.translation: buildUserMessage does not tell Haiku to hand-roll JSON');
+  {
+    // Regression guard for a real 2026-09-15 bug: --json-schema already
+    // constrains the CLI's structured output to { text: string }. A prompt
+    // line ALSO instructing "Return the rewritten message as JSON: {...}"
+    // caused Haiku to double-encode its answer (its own text became a
+    // JSON-stringified {"text": "..."} value), which broke countAskItems
+    // downstream (it anchors on real line starts, and the escaped \n's in a
+    // JSON string aren't real newlines) on every single live attempt.
+    const message = buildUserMessage(job);
+    check('prompt does not instruct Haiku to return JSON itself', !/return.*as json/i.test(message));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

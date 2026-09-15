@@ -32,6 +32,17 @@ const OUTPUT_SCHEMA = {
   required: ['text'],
 };
 
+// Deliberately NO trailing "Return the rewritten message as JSON: {...}"
+// instruction — `--json-schema` below already constrains the CLI's
+// structured output to { text: string }. Telling Haiku *in the prompt* to
+// also produce that exact JSON shape caused it to write its answer as a
+// JSON-stringified `{"text": "..."}` value, which the schema layer then
+// wrapped again — a real double-encoding bug found via a live E2E run
+// (2026-09-15): `structured_output.text` came back containing literal
+// `\n` escapes instead of real newlines, so the ask-item-count regex (which
+// anchors on real line starts) always counted 0, no matter how faithful the
+// underlying rewrite was. Confirmed fixed by local repro against the live
+// CLI (English and Hinglish both) before shipping.
 export function buildUserMessage(job) {
   const register = job.languageHint === 'hinglish' ? 'Hinglish (Roman-script Hindi/English mix)' : 'English';
   return [
@@ -41,8 +52,6 @@ export function buildUserMessage(job) {
     '',
     'Template (already correct — re-express only, do not add or remove information):',
     job.templateText,
-    '',
-    'Return the rewritten message as JSON: {"text": "..."}',
   ].join('\n');
 }
 
