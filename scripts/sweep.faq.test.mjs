@@ -56,7 +56,7 @@ function fakeHangingSpawn() {
 const job = {
   jobId: 'job-faq-1',
   kind: 'faq_answer',
-  languageHint: 'hinglish',
+  languageHint: 'devanagari',
   faqCandidates: [
     { key: 'cancellation-policy', question: 'What is your cancellation policy?', answer: 'Free cancellation up to 24 hours before pickup.' },
     { key: 'ac-charge', question: 'Is AC available?', answer: 'Yes, all cars are AC. An extra ₹400 applies for hill routes.' },
@@ -65,26 +65,52 @@ const job = {
 };
 
 async function run() {
-  console.log('\nsweep.faq: well-formed structured_output success (matched)');
+  console.log('\nsweep.faq: well-formed structured_output success (faqBank match)');
   {
     const envelope = JSON.stringify({
       subtype: 'success',
-      structured_output: { matched: true, faqKey: 'cancellation-policy', text: 'Aap 24 ghante pehle tak free cancel kar sakte hain.' },
+      structured_output: { source: 'faqBank', faqKey: 'cancellation-policy', text: 'You can cancel free up to 24 hours before pickup.' },
     });
     const result = await runFaqJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
     check(
-      'parses matched/selectedFaqKey/text from structured_output',
-      result.matched === true && result.selectedFaqKey === 'cancellation-policy' && !!result.text && !result.failed
+      'parses source/selectedFaqKey/text from structured_output',
+      result.source === 'faqBank' && result.selectedFaqKey === 'cancellation-policy' && !!result.text && !result.failed
     );
   }
 
   console.log('\nsweep.faq: well-formed structured_output success (no confident match)');
   {
-    const envelope = JSON.stringify({ subtype: 'success', structured_output: { matched: false, faqKey: null, text: null } });
+    const envelope = JSON.stringify({ subtype: 'success', structured_output: { source: null, faqKey: null, text: null } });
     const result = await runFaqJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
     check(
-      'a genuine no-match reports matched:false with no key/text, not a failure',
-      result.matched === false && result.selectedFaqKey === undefined && result.text === undefined && !result.failed
+      'a genuine no-match reports source:false with no key/text, not a failure',
+      result.source === false && result.selectedFaqKey === undefined && result.text === undefined && !result.failed
+    );
+  }
+
+  console.log('\nsweep.faq: well-formed structured_output success (Part A2: grounded)');
+  {
+    const envelope = JSON.stringify({
+      subtype: 'success',
+      structured_output: { source: 'grounded', faqKey: null, text: 'Kathgodam to Nainital is 34 KM, about 1 Hour.' },
+    });
+    const result = await runFaqJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
+    check(
+      'parses source: grounded with text but no selectedFaqKey',
+      result.source === 'grounded' && result.selectedFaqKey === undefined && !!result.text && !result.failed
+    );
+  }
+
+  console.log('\nsweep.faq: well-formed structured_output success (Part A2: general)');
+  {
+    const envelope = JSON.stringify({
+      subtype: 'success',
+      structured_output: { source: 'general', faqKey: null, text: 'A hatchback comfortably fits two medium suitcases.' },
+    });
+    const result = await runFaqJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
+    check(
+      'parses source: general with text but no selectedFaqKey',
+      result.source === 'general' && result.selectedFaqKey === undefined && !!result.text && !result.failed
     );
   }
 
@@ -110,12 +136,12 @@ async function run() {
   {
     const envelope = JSON.stringify({
       subtype: 'success',
-      result: '```json\n{"matched": true, "faqKey": "ac-charge", "text": "Haan, AC hai — hill routes par extra charge lagta hai."}\n```',
+      result: '```json\n{"source": "faqBank", "faqKey": "ac-charge", "text": "Yes, all cars have AC — hill routes carry an extra charge."}\n```',
     });
     const result = await runFaqJob(job, { spawnFn: fakeSpawn({ stdout: envelope }) });
     check(
       'strips the fence and parses the fields from result',
-      result.matched === true && result.selectedFaqKey === 'ac-charge' && !result.failed
+      result.source === 'faqBank' && result.selectedFaqKey === 'ac-charge' && !result.failed
     );
   }
 

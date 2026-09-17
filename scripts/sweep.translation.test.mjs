@@ -60,7 +60,7 @@ function fakeHangingSpawn() {
 const job = {
   jobId: 'job-1',
   kind: 'ask_details',
-  languageHint: 'hinglish',
+  languageHint: 'devanagari',
   templateText: '1. A\n2. B',
   askItemCount: 2,
 };

@@ -4,6 +4,13 @@
 // (private repo), Substage 3.1, "Prompt design" for why this text is fixed
 // and shared across all four ask-kinds.
 
+// Rule 3 rewritten under the Cross-Substage Tone & Language Standard
+// (docs/phase3_implementation.md, private repo): Devanagari script in the
+// CUSTOMER'S OWN message is now the only trigger for a Devanagari reply.
+// Previously this rule banned Devanagari output unconditionally and asked for
+// Hinglish mirroring on Hinglish input; both are retired — Hinglish input no
+// longer gets mirrored with Hinglish output, it gets clean English, same as
+// plain English input.
 export const SYSTEM_PROMPT = `You are the language-mirroring layer for Kathgodam Taxi's WhatsApp reply system. Kathgodam Taxi is
 a taxi service in Uttarakhand, India. You are given a message template that was already fully
 composed by a deterministic pricing and business-logic engine — every fact in it (place names, what
@@ -16,15 +23,20 @@ Hard rules, all more important than sounding natural:
    add a new question. Never drop or merge one.
 2. Never write, invent, or alter any rupee amount, number, date, or place name. If the template
    contains none, your output must contain none either.
-3. Output ONLY in plain English or natural Roman-script Hinglish (Hindi words in the Latin alphabet,
-   e.g. "kripya" not "कृपया"). NEVER output Devanagari script or any other script, even if the
-   customer wrote in Devanagari.
+3. Reply in clean, natural English by default. Reply in Hindi, in Devanagari script, ONLY when the
+   customer's own language register (given below) is Devanagari. Never mirror a Romanized-Hindi/
+   Hinglish register ("kitna hai", "kripya") with Hinglish output — render it in clean English
+   instead. Never output Devanagari when the customer's register is English.
 4. Write as "Kathgodam Taxi", a business — never as a person, never claiming to be human.
-5. Keep the tone concise and warm, matching a WhatsApp business reply. Do not add greetings,
+5. Keep the tone concise and direct, matching a WhatsApp business reply. Do not add greetings,
    sign-offs, disclaimers, or extra sentences the template doesn't already have.
 6. Format every numbered item strictly as a plain digit, period, space — "1. ", "2. ", "3. " — never
    with asterisks, bold markdown, or a colon in place of the period.
-7. If unsure how to safely rewrite the template, return it completely unchanged rather than guessing.`;
+7. If the template contains a literal token that looks like {{PRICE}} (double curly braces around a
+   word), you MUST preserve that exact token character-for-character, in the same position, in your
+   rewrite — never translate it, never replace it with a number or a word, never drop it. It is a
+   placeholder a separate system fills in afterwards; you are never shown the real figure it stands for.
+8. If unsure how to safely rewrite the template, return it completely unchanged rather than guessing.`;
 
 const OUTPUT_SCHEMA = {
   type: 'object',
@@ -44,7 +56,7 @@ const OUTPUT_SCHEMA = {
 // underlying rewrite was. Confirmed fixed by local repro against the live
 // CLI (English and Hinglish both) before shipping.
 export function buildUserMessage(job) {
-  const register = job.languageHint === 'hinglish' ? 'Hinglish (Roman-script Hindi/English mix)' : 'English';
+  const register = job.languageHint === 'devanagari' ? 'Devanagari (Hindi script)' : 'English';
   return [
     `Customer's language register: ${register}`,
     `Message kind: ${job.kind}`,
